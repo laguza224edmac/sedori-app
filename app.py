@@ -8,127 +8,105 @@ from pyzbar.pyzbar import decode
 from PIL import Image
 
 # --- ページ設定 ---
-st.set_page_config(page_title="最強せどりツールv9.0", layout="wide")
+st.set_page_config(page_title="プロ・ハンター v9.0", layout="wide")
 
-st.title("📱 最強せどりツール v9.0")
-st.write("ノイズ除去フィルター搭載！純粋な「本体価格」だけを狙い撃ちします。")
+st.title("🏹 プロ・ハンター v9.0")
+st.write("利益アラート ＆ 複数市場リサーチモード")
 
 # --- サイドバー設定 ---
-st.sidebar.header("🔍 検索・フィルタ設定")
-input_mode = st.sidebar.radio("モード", ["キーワード入力", "バーコード読み取り"])
-
-# 【追加】価格下限フィルター：安すぎる「ケース」などを排除
-min_price_filter = st.sidebar.number_input("最低価格フィルター（これ未満は無視）", value=5000, step=500)
-
-# 【追加】即決のみ設定
-buy_now_only = st.sidebar.checkbox("即決価格（今すぐ買える商品）のみ", value=True)
-
+st.sidebar.header("⚙️ ハンター設定")
+input_mode = st.sidebar.radio("検索モード", ["バーコード読み取り", "キーワード入力"])
+alert_threshold = st.sidebar.number_input("利益アラートの基準（円）", value=2000, step=500)
 shipping_cost = st.sidebar.number_input("送料（円）", value=750, step=50)
-exclude_junk = st.sidebar.checkbox("「ジャンク・ケース・箱」を除外", value=True)
 
 keyword = ""
-if input_mode == "キーワード入力":
-    keyword = st.sidebar.text_input("検索ワード", "iPhone 12")
 
-# --- 高感度バーコード読み取り ---
+# --- カメラでバーコード読み取り ---
 if input_mode == "バーコード読み取り":
-    img_file_buffer = st.camera_input("バーコードを撮影")
+    st.info("👇 バーコードの写真を撮ってください")
+    img_file_buffer = st.camera_input("バーコードをスキャン")
     if img_file_buffer:
         image = Image.open(img_file_buffer)
-        # 白黒加工で感度アップ
-        gray_image = image.convert('L')
-        decoded_objects = decode(image) or decode(gray_image)
-        
-        if decoded_objects:
-            keyword = decoded_objects[0].data.decode("utf-8")
-            st.success(f"✅ 読み取り成功: {keyword}")
+        decoded = decode(image)
+        if decoded:
+            keyword = decoded[0].data.decode("utf-8")
+            st.success(f"🎯 読み取り成功: {keyword}")
         else:
-            st.error("❌ 読み取れません。もう少し離してピントを合わせてみて！")
+            st.error("読み取り失敗... 明るい場所でもう一度試して！")
+else:
+    keyword = st.sidebar.text_input("検索ワード入力", "iPhone 12")
 
-# --- 検索関数 ---
-def get_yahoo_data(url):
+# --- 価格取得のための裏方ツール ---
+def get_yahoo_price(kw):
+    url = f"https://auctions.yahoo.co.jp/closedsearch/closedsearch?p={kw}"
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        items = []
-        product_list = soup.find_all("li", class_="Product")
-        
-        for product in product_list:
-            title_tag = product.find("a", class_="Product__titleLink")
-            # 即決価格を探す。なければ通常価格。
-            price_tag = product.find("span", class_="Product__priceValue")
-            buynow_tag = product.find("span", class_="Product__label--buynow") # 即決アイコン
-            
-            if title_tag and price_tag:
-                title = title_tag.text.strip()
-                link = title_tag.get("href")
-                price_text = price_tag.text.replace("円", "").replace(",", "").strip()
-                
-                if price_text.isdigit():
-                    price = int(price_text)
-                    
-                    # --- 鉄壁のフィルター群 ---
-                    # 1. 価格下限チェック
-                    if price < min_price_filter:
-                        continue
-                    
-                    # 2. 即決のみチェック（即決設定ONで、即決アイコンがない場合は飛ばす）
-                    # ヤフオクの仕様上、検索URL側で制御するのが確実なので後述のURL生成も修正
-                    
-                    # 3. キーワード除外（ケース、フィルム、箱、などのノイズ）
-                    if exclude_junk:
-                        noise_keywords = ["ジャンク", "JUNK", "訳あり", "ケース", "フィルム", "カバー", "空箱", "写真", "のみ"]
-                        if any(nw in title for nw in noise_keywords):
-                            continue
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        prices = [int(p.text.replace("円", "").replace(",", "").strip()) for p in soup.find_all(class_="Product__priceValue") if p.text.replace("円", "").replace(",", "").strip().isdigit()]
+        return int(statistics.mean(prices)) if prices else 0
+    except:
+        return 0
 
-                    image_tag = product.find("img")
-                    image_url = image_tag.get("src") if image_tag else ""
-                    
-                    items.append({"画像": image_url, "商品名": title, "price": price, "link": link})
-        return items
-    except: return []
+def get_rakuten_price(kw):
+    url = f"https://search.rakuten.co.jp/search/mall/{kw}/"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        prices = [int(p.text.replace(",", "").strip()) for p in soup.find_all(class_="_price") if p.text.replace(",", "").strip().isdigit()]
+        return min(prices) if prices else 0
+    except:
+        return 0
 
-# --- 実行セクション ---
+# --- メインのリサーチ処理 ---
 if keyword:
     st.divider()
-    if st.button("🚀 精密リサーチ開始"):
-        # URL生成時に「即決」や「価格下限」をヤフオク側にも伝える（より正確になります）
-        # istatus=2 が即決のみ、min=価格下限
-        yahoo_base = "https://auctions.yahoo.co.jp/search/search?"
-        params = {
-            "p": keyword,
-            "n": 50,
-            "min": min_price_filter,
-            "istatus": 2 if buy_now_only else 0, # 2は即決、0はすべて
-        }
-        
-        # 過去相場用（過去データは即決に限らず全体を見るのが一般的）
-        sold_url = f"https://auctions.yahoo.co.jp/closedsearch/closedsearch?p={keyword}&n=50"
-        # 現在出品用
-        current_url = f"{yahoo_base}{urllib.parse.urlencode(params)}"
-        
-        # 相場調査
-        sold_items = get_yahoo_data(sold_url)
-        if sold_items:
-            market_price = int(statistics.mean([item["price"] for item in sold_items]))
-            st.success(f"📈 過去相場（ノイズ除去後）: {market_price:,}円")
+    if st.button("🚀 全市場一斉リサーチ開始！"):
+        with st.spinner('各市場のデータを全力で計算中...'):
+            yahoo_avg = get_yahoo_price(keyword)
+            rakuten_min = get_rakuten_price(keyword)
             
-            # 出品中調査
-            current_items = get_yahoo_data(current_url)
+            # --- 画面表示：相場比較 ---
+            st.markdown("### 📊 市場の相場チェック")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("ヤフオク落札相場", f"{yahoo_avg:,}円")
+            with col2:
+                st.metric("楽天最安値(新品目安)", f"{rakuten_min:,}円")
+
+            st.divider()
+
+            # --- ヤフオクで現在出品中の利益商品をチェック ---
+            st.info("現在出品中のお宝を探しています...")
+            url_current = f"https://auctions.yahoo.co.jp/search/search?p={keyword}"
+            res_curr = requests.get(url_current, headers={"User-Agent": "Mozilla/5.0"})
+            soup_curr = BeautifulSoup(res_curr.text, 'html.parser')
+            
+            current_items = []
+            for item in soup_curr.find_all("li", class_="Product")[:10]: # 上位10件を素早くチェック
+                t = item.find("a", class_="Product__titleLink")
+                p = item.find("span", class_="Product__priceValue")
+                if t and p:
+                    price = int(p.text.replace("円", "").replace(",", "").strip())
+                    profit = int((yahoo_avg * 0.9) - shipping_cost - price) # 利益計算
+                    current_items.append({"商品名": t.text.strip(), "価格": price, "利益": profit, "URL": t.get("href")})
+            
             if current_items:
-                results = []
-                for item in current_items:
-                    te_dori = market_price * 0.9
-                    profit = int(te_dori - shipping_cost - item["price"])
-                    results.append({"画像": item["画像"], "商品名": item["商品名"], "現在価格": item["price"], "予想利益": profit, "リンク": item["link"]})
-                
-                df = pd.DataFrame(results).sort_values(by="予想利益", ascending=False)
-                st.dataframe(df, column_config={"画像": st.column_config.ImageColumn(), "リンク": st.column_config.LinkColumn()}, hide_index=True)
-                
-                # お宝判定
-                if df.iloc[0]["予想利益"] > 0:
-                    st.balloons()
-                    st.error(f"🔥 お宝発見！ 利益: {df.iloc[0]['予想利益']:,}円")
-            else: st.warning("条件に合う出品はありません。フィルターを緩めてみて！")
-        else: st.error("過去データが見つかりません。")
+                df = pd.DataFrame(current_items).sort_values(by="利益", ascending=False)
+                best = df.iloc[0]
+
+                # === ★新機能：利益アラート★ ===
+                if best["利益"] >= alert_threshold:
+                    st.balloons() # 風船でお祝い！
+                    st.toast("お宝発見！基準をクリアしました！", icon="💰") # スマホ用ポップアップ
+                    st.error(f"🚨 【激アツ】予想利益 +{best['利益']:,}円 の商品があります！")
+                    st.markdown(f"**狙い目商品:** [{best['商品名']}]({best['URL']})")
+                else:
+                    st.info(f"現在の最高利益：+{best['利益']:,}円（設定した基準まであと {alert_threshold - best['利益']}円）")
+
+                # リスト表示
+                st.write("### 📋 簡易リサーチリスト")
+                st.table(df[["商品名", "価格", "利益"]])
+            else:
+                st.warning("現在出品中のアイテムが見つかりませんでした。")
